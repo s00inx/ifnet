@@ -8,19 +8,28 @@
 #include <string.h>
 #include <stdlib.h>
 #include <linux/if_ether.h>
+#include <linux/pkt_sched.h>
+#include <errno.h>
 
 #define ETHER_ALEN 6
+// from /proc/net/psched (hack for pet project basically)
+#define HZ 1000
+// default mtu for ethernet packet
+#define MTUSZ 1500
+// psched shift from <include/net/psched.h> (hardcode for pet project)
+#define PSCHED_SHIFT 6
 
-typedef struct addr_info {
+
+typedef struct addrn_t {
     int ifindex;
     char addr[INET6_ADDRSTRLEN];
     char brd[INET6_ADDRSTRLEN];
     char local[INET6_ADDRSTRLEN];
 
-    struct addr_info *next;
+    struct addrn_t *next;
 } addrn_t;
 
-typedef struct if_info {
+typedef struct ifn_t {
     int ifindex;
     char ifname[IFNAMSIZ];
 
@@ -31,7 +40,7 @@ typedef struct if_info {
 
     addrn_t *addrs; 
 
-    struct if_info *next;
+    struct ifn_t *next;
 } ifn_t;
 
 // get net interfaces (return head of linked list)
@@ -232,10 +241,10 @@ int show(int fd) {
     // print info logic
     ifn_t* curr_if = ifhead;
     while (curr_if != NULL) {
-        printf("%d : %s < %s > mtu %d\n", 
+        printf("%d : \033[1;34m%s\033[0m < %s > mtu %d\n", 
                curr_if->ifindex, 
                curr_if->ifname, 
-               curr_if->is_up ? "UP" : "DOWN",
+               curr_if->is_up ? "\033[32mUP\033[0m" : "\033[31mDOWN\033[0m",  
                curr_if->mtu);
         
         printf("\tlink %02x:%02x:%02x:%02x:%02x:%02x brd %02x:%02x:%02x:%02x:%02x:%02x\n",
@@ -257,6 +266,148 @@ int show(int fd) {
     free_if(addrl, ifhead, max_ifi);
     return 0;
 };
+
+// send delqdiskmsg and recv ans from kernel
+int do_delqdisc(int fd, unsigned int ifindex, char *buf, int bufsize) {
+    struct {
+        struct nlmsghdr nlh;
+        struct tcmsg tcm;
+    } req_d = {
+        .nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg)),
+        .nlh.nlmsg_type = RTM_DELQDISC,
+        .nlh.nlmsg_seq = 1,
+        .nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK,
+        .tcm.tcm_family = AF_UNSPEC,
+        .tcm.tcm_ifindex = (int)ifindex,
+        .tcm.tcm_parent = TC_H_ROOT,
+        .tcm.tcm_handle = 0,
+    };
+
+    if (send(fd, &req_d, req_d.nlh.nlmsg_len, 0) < 0) {
+        perror("netlink sending error");
+        return -1;
+    }
+
+    int l = recv(fd, buf, bufsize, 0);
+    if (l < 0) {
+        fprintf(stderr, "no data received\n");
+        return -1;
+    }
+    struct nlmsghdr *nh = (struct nlmsghdr *)buf;
+    if (nh->nlmsg_type == NLMSG_ERROR) {
+        struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nh);
+        if (err->error != 0 && err->error != -ENOENT) {
+            printf("delqdisc error: %s (%d)\n", strerror(-err->error), -err->error);
+            return -1;
+        }
+    }
+    
+    return 0;
+} 
+
+// set tbf shaping to interface, speed in bytes/sec
+int set_tc(int fd, unsigned int ifindex, unsigned int speed) {
+    char buf[1 << 12]; 
+    if (do_delqdisc(fd, ifindex, buf, sizeof(buf)) < 0) {
+        return -1;
+    }
+
+    struct {
+        struct nlmsghdr nlh;
+        struct tcmsg tcm;
+        char rtabuf[1 << 12];
+    } req = {
+        .nlh.nlmsg_len = NLMSG_LENGTH(sizeof(struct tcmsg)),
+        .nlh.nlmsg_type = RTM_NEWQDISC,
+        .nlh.nlmsg_seq = 1,
+        .nlh.nlmsg_flags = NLM_F_REQUEST | NLM_F_ACK | NLM_F_CREATE | NLM_F_EXCL,
+
+        .tcm.tcm_family = AF_UNSPEC,
+        .tcm.tcm_ifindex = (int)ifindex,
+        .tcm.tcm_parent = TC_H_ROOT,
+        .tcm.tcm_handle = TC_H_MAKE(1 << 16, 0),
+    };
+
+    // tbf conf options 
+    struct tc_tbf_qopt qopt = {0};
+    qopt.rate.rate = speed;
+    qopt.limit = 30000;    
+
+    unsigned int burst_b = speed / HZ + MTUSZ;
+    if (burst_b < 2 * MTUSZ) {
+        burst_b = 2 * MTUSZ;
+    }
+
+    // cast to linux time format (backward compability with 32-bit tbf structs)
+    double ns_pb = 1000000000.0 / speed;
+    qopt.buffer = ((unsigned long)(burst_b * ns_pb) + (1ULL << (PSCHED_SHIFT - 1))) >> PSCHED_SHIFT;
+
+    // cell log calculation based on burst
+    int cell_log = 0;
+    while ((unsigned int)(256 << cell_log) < (burst_b + MTUSZ)) {
+        cell_log++;
+    }
+    qopt.rate.cell_log = cell_log;
+
+    uint32_t rtab[256];
+    for (int i = 0; i < 256; i++) {
+        unsigned int sz = (i + 1) << qopt.rate.cell_log;
+        rtab[i] = ((unsigned long)(sz * ns_pb)) >> PSCHED_SHIFT;
+    }
+
+    struct rtattr *rta = (struct rtattr*)req.rtabuf;
+    rta->rta_type = TCA_KIND;
+    rta->rta_len = RTA_LENGTH(strlen("tbf") + 1);
+    strcpy((char *)RTA_DATA(rta), "tbf");
+    req.nlh.nlmsg_len += RTA_SPACE(strlen("tbf") + 1);
+
+    struct {
+        struct rtattr p_rta;
+        struct tc_tbf_qopt qopt;
+        struct rtattr rtab_rta;
+        uint32_t rtab[256];
+    } tbf_opts = {
+        .p_rta.rta_type = TCA_TBF_PARMS,
+        .p_rta.rta_len = RTA_LENGTH(sizeof(qopt)),
+        .qopt = qopt,
+
+        .rtab_rta.rta_type = TCA_TBF_RTAB,
+        .rtab_rta.rta_len = RTA_LENGTH(sizeof(rtab))
+    };
+    memcpy(tbf_opts.rtab, rtab, sizeof(rtab));
+
+    struct rtattr *optrta = (struct rtattr *)((char *)rta + RTA_SPACE(strlen("tbf") + 1));
+    optrta->rta_type = TCA_OPTIONS;
+    optrta->rta_len = RTA_LENGTH(sizeof(tbf_opts));
+
+    memcpy(RTA_DATA(optrta), &tbf_opts, sizeof(tbf_opts));
+    req.nlh.nlmsg_len += RTA_SPACE(sizeof(tbf_opts));
+
+    if (send(fd, &req, req.nlh.nlmsg_len, 0) < 0) {
+        perror("netlink sending error");
+        return -1;
+    }
+
+    memset(buf, 0, sizeof(buf));
+    int l = recv(fd, buf, sizeof(buf), 0);
+    if (l < 0) {
+        fprintf(stderr, "no data received\n");
+        return -1;
+    }
+
+    struct nlmsghdr *nh = (struct nlmsghdr *)buf;
+    if (nh->nlmsg_type == NLMSG_ERROR) {
+        struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nh);
+        if (err->error == 0) {
+            printf("tbf qdisc changed speed to %d\n", speed);
+        } else { 
+            printf("tbf error: %s (%d)\n", strerror(-err->error), -err->error);
+            return -1;
+        }
+    }
+
+    return 0;
+}
 
 // set iface mtu to [mtu] val
 void set_if_mtu(int fd, unsigned int ifindex, int mtu) {
@@ -432,7 +583,7 @@ int listen_sk(int fd) {
                         rta = RTA_NEXT(rta, rtal);
                     }
 
-                    printf("[ADDR] \033[31m- deleted IP\033[0m: \033[1;33m%s/%d\033[0m from iface: %d\n", 
+                    printf("addr > \033[31m- deleted IP\033[0m: \033[1;33m%s/%d\033[0m from iface: %d\n", 
                            ip_str, ifa->ifa_prefixlen, ifa->ifa_index);
                     break;
                 }
@@ -456,6 +607,7 @@ int listen_sk(int fd) {
 void set_iffup(int fd, unsigned ifindex, int up) {
     set_ifa(fd, ifindex, up  ? IFF_UP : 0, IFF_UP);
 };
+
 
 // init listening socket
 int init_socket() {

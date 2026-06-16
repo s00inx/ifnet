@@ -9,4 +9,5 @@ void set_iffup(int fd, unsigned ifindex, int up);
 void set_if_mtu(int fd, unsigned int ifindex, int mtu);
 
 int listen_sk(int fd);
+int set_tc(int fd, unsigned int ifindex, unsigned int speed);
 #endif 
