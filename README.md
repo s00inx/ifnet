@@ -3,7 +3,7 @@
 Simple CLI tool for configuring network in Linux on pure C using Netlink sockets and no external libs (only posix api and linux headers). This project was created for deep dive into how utilities like `ip` and `tc` (from `iproute2`) work with Linux kernel on low level using netlink.  
 
 ## What I learned
-This pet project was a massive leap for my understanding linux internals, here is challenges i faced:
+This pet project was a massive leap for my understanding linux internals, here are challenges i faced:
 #### Working with Netlink
 I learned how to work with the Netlink subsystem to handle low-level communication between kernel space and user space. I gained practical experience setting up raw `AF_NETLINK` sockets with the `NETLINK_ROUTE` protocol and subscribing to multicast Netlink groups (`RTMGRP_LINK`, `RTMGRP_IPV4_IFADDR`) for asynchronous event tracking.
 
