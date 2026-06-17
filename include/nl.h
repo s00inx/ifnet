@@ -1,14 +1,15 @@
-#ifndef NL_H
+#pragma once
 #define NL_H
+
+#include <stdint.h>
 
 int init_socket();
 int close_socket(int fd);
 
 int show(int fd);
-void set_iffup(int fd, unsigned ifindex, int up);
-void set_if_mtu(int fd, unsigned int ifindex, int mtu);
+int set_iffup(int fd, unsigned ifindex, int up);
+int set_if_mtu(int fd, uint32_t ifindex, int mtu);
 
 int listen_sk(int fd);
-int set_tc(int fd, unsigned int ifindex, unsigned int speed);
-int del_qdisc(int fd, unsigned int ifindex);
-#endif 
+int set_tc(int fd, uint32_t ifindex, uint32_t speed);
+int del_qdisc(int fd, uint32_t ifindex);
