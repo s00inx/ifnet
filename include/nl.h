@@ -1,7 +1,7 @@
 #ifndef NL_H
 #define NL_H
 
-extern int init_socket();
+int init_socket();
 int close_socket(int fd);
 
 int show(int fd);

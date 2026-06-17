@@ -35,7 +35,7 @@ typedef struct ifn_t {
 
     unsigned char mac[ETHER_ALEN];
     unsigned char brd[ETHER_ALEN];
-    unsigned int mtu;
+    uint32_t mtu;
     int is_up;
 
     addrn_t *addrs; 
@@ -56,11 +56,11 @@ ifn_t *get_if(int fd, char *buf, int bufsz, int *max_ifindex) {
         .ifi.ifi_family = AF_UNSPEC
     };
     if (send(fd, &req, req.nlh.nlmsg_len, 0) < 0) {
-        perror("no data"); close(fd);
+        perror("no data"); 
         return NULL;
     };
 
-    ifn_t* head = ((void *)0); ifn_t* tail = ((void *)0);
+    ifn_t* head = NULL; ifn_t* tail = NULL;
     int eod = 0;
     while (!eod) {
         int l = recv(fd, buf, bufsz, 0);
@@ -84,6 +84,13 @@ ifn_t *get_if(int fd, char *buf, int bufsz, int *max_ifindex) {
                 struct ifinfomsg* ifi = NLMSG_DATA(nh);
 
                 ifn_t* new = malloc(sizeof(ifn_t));
+                if (new == NULL) {
+                    perror("malloc failed for new interface");
+                    free_if_list(head);
+                    
+                    // read to the end 
+                    while (!eod && recv(fd, buf, bufsz, 0) > 0) {}
+                }
                 memset(new, 0, sizeof(ifn_t));
 
                 if (ifi->ifi_index > *max_ifindex) { *max_ifindex = ifi->ifi_index; }
@@ -96,18 +103,19 @@ ifn_t *get_if(int fd, char *buf, int bufsz, int *max_ifindex) {
                     {
                     case IFLA_IFNAME:
                         strncpy(new->ifname, (char *)RTA_DATA(rta), IFNAMSIZ - 1);
+                        new->ifname[IFNAMSIZ - 1] = '\0';
                         break;
                     
-                    case IFLA_ADDRESS:;
+                    case IFLA_ADDRESS:
                         memcpy(new->mac, (unsigned char *)RTA_DATA(rta), ETH_ALEN);
                         break;
 
-                    case IFLA_BROADCAST:;
+                    case IFLA_BROADCAST:
                         memcpy(new->brd, (unsigned char *)RTA_DATA(rta), ETH_ALEN);
                         break;
 
                     case IFLA_MTU:;
-                        new->mtu = *(unsigned int *)RTA_DATA(rta);
+                        new->mtu = *(uint32_t *)RTA_DATA(rta);
                         break;
                     }
                     rta = RTA_NEXT(rta, len);
@@ -131,6 +139,9 @@ ifn_t *get_if(int fd, char *buf, int bufsz, int *max_ifindex) {
 // get addrs binded on ifaces (return ptr to addr list)
 addrn_t **get_addr(int fd, char *buf, int bufsz, int max_ifindex) {
     addrn_t **addrl = calloc(max_ifindex + 1, sizeof(addrn_t *));
+    if (addrl == NULL) {
+        return NULL;
+    }
     // ifaddrmsg for addr info
     struct {
         struct nlmsghdr nlh; 
@@ -144,7 +155,7 @@ addrn_t **get_addr(int fd, char *buf, int bufsz, int max_ifindex) {
     };
 
     if (send(fd, &req_a, req_a.nlh.nlmsg_len, 0) < 0) {
-        fprintf(stderr, "no data"); close(fd);
+        fprintf(stderr, "no data"); 
         return NULL;
     };
 
@@ -173,6 +184,9 @@ addrn_t **get_addr(int fd, char *buf, int bufsz, int max_ifindex) {
                 }
 
                 addrn_t* new = malloc(sizeof(addrn_t));
+                if (new == NULL) {
+                    break;
+                }
                 memset(new, 0, sizeof(addrn_t));
 
                 new->ifindex = ifa->ifa_index;
@@ -208,7 +222,7 @@ addrn_t **get_addr(int fd, char *buf, int bufsz, int max_ifindex) {
 }
 
 // free resources
-int free_if(addrn_t **addrl, ifn_t *head, int max_ifindex) {
+void free_if(addrn_t **addrl, ifn_t *head, int max_ifindex) {
     for (int i = 0; i <= max_ifindex; i++) {
     addrn_t *ip = addrl[i];
         while (ip != NULL) {
@@ -224,19 +238,20 @@ int free_if(addrn_t **addrl, ifn_t *head, int max_ifindex) {
         free(curr_if);
         curr_if = tmp;
     }
-
-    return 0; 
 }
 
 // show info (ifaces and ips)
 int show(int fd) {
-    int bufsz = 1 << 12;
-    char buf[bufsz]; int max_ifi = 0;
+    char buf[1 << 12]; int bufsz = sizeof(buf); int max_ifi = 0;
 
     ifn_t * ifhead = get_if(fd, buf, bufsz, &max_ifi);
 
     memset(buf, 0, bufsz);
     addrn_t **addrl = get_addr(fd, buf, bufsz, max_ifi);
+    if (addrl == NULL) {
+        perror("can not get addr data\n");
+        return -1;
+    }
 
     // print info logic
     ifn_t* curr_if = ifhead;
@@ -268,7 +283,7 @@ int show(int fd) {
 };
 
 // send delqdiskmsg and recv ans from kernel
-int do_delqdisc(int fd, unsigned int ifindex, char *buf, int bufsize) {
+int do_delqdisc(int fd, uint32_t ifindex, char *buf, int bufsize) {
     struct {
         struct nlmsghdr nlh;
         struct tcmsg tcm;
@@ -306,13 +321,13 @@ int do_delqdisc(int fd, unsigned int ifindex, char *buf, int bufsize) {
 } 
 
 // delete qdisk from iface 
-int del_qdisc(int fd, unsigned int ifindex) {
+int del_qdisc(int fd, uint32_t ifindex) {
     char buf[1 << 12];
     return do_delqdisc(fd, ifindex, buf, sizeof(buf));
 }
 
 // set tbf shaping to interface, speed in bytes/sec
-int set_tc(int fd, unsigned int ifindex, unsigned int speed) {
+int set_tc(int fd, uint32_t ifindex, uint32_t speed) {
     char buf[1 << 12]; 
     if (do_delqdisc(fd, ifindex, buf, sizeof(buf)) < 0) {
         return -1;
@@ -339,26 +354,29 @@ int set_tc(int fd, unsigned int ifindex, unsigned int speed) {
     qopt.rate.rate = speed;
     qopt.limit = 30000;    
 
-    unsigned int burst_b = speed / HZ + MTUSZ;
+    // burst size based on speed
+    uint32_t burst_b = speed / HZ + MTUSZ;
     if (burst_b < 2 * MTUSZ) {
         burst_b = 2 * MTUSZ;
     }
 
-    // cast to linux time format (backward compability with 32-bit tbf structs)
+    // cast to ns time format (backward compability with 32-bit tbf structs)
     double ns_pb = 1000000000.0 / speed;
-    qopt.buffer = ((unsigned long)(burst_b * ns_pb) + (1ULL << (PSCHED_SHIFT - 1))) >> PSCHED_SHIFT;
+    qopt.buffer = ((uint64_t)(burst_b * ns_pb) + (1ULL << (PSCHED_SHIFT - 1))) >> PSCHED_SHIFT;
 
     // cell log calculation based on burst
     int cell_log = 0;
-    while ((unsigned int)(256 << cell_log) < (burst_b + MTUSZ)) {
+    while ((uint32_t)(256 << cell_log) < (burst_b + MTUSZ)) {
         cell_log++;
     }
     qopt.rate.cell_log = cell_log;
 
     uint32_t rtab[256];
     for (int i = 0; i < 256; i++) {
-        unsigned int sz = (i + 1) << qopt.rate.cell_log;
-        rtab[i] = ((unsigned long)(sz * ns_pb)) >> PSCHED_SHIFT;
+        uint32_t sz = (i + 1) << qopt.rate.cell_log;
+
+        // cast to ns time format
+        rtab[i] = ((uint64_t)(sz * ns_pb)) >> PSCHED_SHIFT;
     }
 
     struct rtattr *rta = (struct rtattr*)req.rtabuf;
@@ -416,7 +434,7 @@ int set_tc(int fd, unsigned int ifindex, unsigned int speed) {
 }
 
 // set iface mtu to [mtu] val
-void set_if_mtu(int fd, unsigned int ifindex, int mtu) {
+int set_if_mtu(int fd, uint32_t ifindex, int mtu) {
     struct {
         struct nlmsghdr nlh; 
         struct ifinfomsg ifi; 
@@ -440,14 +458,14 @@ void set_if_mtu(int fd, unsigned int ifindex, int mtu) {
 
     if (send(fd, &req, req.nlh.nlmsg_len, 0) < 0) {
         perror("netlink sending error");
-        return;
+        return -1;
     }
 
     char buf[1 << 12];
     int l = recv(fd, buf, sizeof(buf), 0);
     if (l < 0) {
         fprintf(stderr, "no data received");
-        return;
+        return -1;
     }
 
     struct nlmsghdr *nh = (struct nlmsghdr *)buf;
@@ -455,14 +473,15 @@ void set_if_mtu(int fd, unsigned int ifindex, int mtu) {
         struct nlmsgerr *err = (struct nlmsgerr *)NLMSG_DATA(nh);
         if (err->error != 0) {
             fprintf(stderr, "mtu changing err with code %d\n", err->error);
-            return;
+            return -1;
         }
     }
     printf("mtu changed to %d\n", mtu);
+    return 0;
 }
 
 // set [flags] to iface [mask]
-void set_ifa(int fd, unsigned ifindex, uint32_t flags, uint32_t mask) {    
+int set_ifa(int fd, unsigned ifindex, uint32_t flags, uint32_t mask) {    
     struct {
         struct nlmsghdr nlh; 
         struct ifinfomsg ifi; 
@@ -479,14 +498,14 @@ void set_ifa(int fd, unsigned ifindex, uint32_t flags, uint32_t mask) {
 
     if (send(fd, &req, req.nlh.nlmsg_len, 0) < 0) {
         perror("netlink sending error\n");
-        return;
+        return -1;
     }
 
     char buf[1 << 12];
     int l = recv(fd, buf, sizeof(buf), 0);
     if (l < 0) {
         fprintf(stderr, "no data received\n");
-        return;
+        return -1;
     }
 
     struct nlmsghdr *nh = (struct nlmsghdr *)buf;
@@ -496,8 +515,11 @@ void set_ifa(int fd, unsigned ifindex, uint32_t flags, uint32_t mask) {
             printf("ifa changed\n");
         } else { 
             printf("error: %s (%d)\n", strerror(-err->error), -err->error);
+            return -1;
         }
     }
+
+    return 0;
 };
 
 // listen to nl events
@@ -610,8 +632,8 @@ int listen_sk(int fd) {
 }
 
 // set IFF_UP flag to [up] (link set [] up/down)
-void set_iffup(int fd, unsigned ifindex, int up) {
-    set_ifa(fd, ifindex, up  ? IFF_UP : 0, IFF_UP);
+int set_iffup(int fd, unsigned ifindex, int up) {
+    return set_ifa(fd, ifindex, up  ? IFF_UP : 0, IFF_UP);
 };
 
 
