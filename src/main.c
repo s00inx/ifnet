@@ -70,7 +70,7 @@ int main(int argc, char *argv[]) {
                 return 1;
             }
 
-            if (val < 68 || val > 65535) {
+            if (val < 68 || val > 65535) {//min and max ports
                 fprintf(stderr, "error: mtu %ld is out of range (allowed: 68 - 65535)\n", val);
                 return 1;
             }

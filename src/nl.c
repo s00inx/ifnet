@@ -83,15 +83,14 @@ ifn_t *get_if(int fd, char *buf, int bufsz, int *max_ifindex) {
                 // jump from header to data using macro | hdr |> data (ifinfomsg)
                 struct ifinfomsg* ifi = NLMSG_DATA(nh);
 
-                ifn_t* new = malloc(sizeof(ifn_t));
+                ifn_t* new = calloc(1, sizeof(ifn_t));
                 if (new == NULL) {
-                    perror("malloc failed for new interface");
+                    perror("calloc failed for new interface");
                     free_if_list(head);
                     
                     // read to the end 
                     while (!eod && recv(fd, buf, bufsz, 0) > 0) {}
                 }
-                memset(new, 0, sizeof(ifn_t));
 
                 if (ifi->ifi_index > *max_ifindex) { *max_ifindex = ifi->ifi_index; }
                 new->ifindex = ifi->ifi_index;
@@ -183,11 +182,10 @@ addrn_t **get_addr(int fd, char *buf, int bufsz, int max_ifindex) {
                     continue;
                 }
 
-                addrn_t* new = malloc(sizeof(addrn_t));
+                addrn_t* new = calloc(1, sizeof(addrn_t));
                 if (new == NULL) {
                     break;
                 }
-                memset(new, 0, sizeof(addrn_t));
 
                 new->ifindex = ifa->ifa_index;
 
@@ -242,11 +240,10 @@ void free_if(addrn_t **addrl, ifn_t *head, int max_ifindex) {
 
 // show info (ifaces and ips)
 int show(int fd) {
-    char buf[1 << 12]; int bufsz = sizeof(buf); int max_ifi = 0;
+    char buf[1 << 12] = {0}; int bufsz = sizeof(buf); int max_ifi = 0;
 
     ifn_t * ifhead = get_if(fd, buf, bufsz, &max_ifi);
 
-    memset(buf, 0, bufsz);
     addrn_t **addrl = get_addr(fd, buf, bufsz, max_ifi);
     if (addrl == NULL) {
         perror("can not get addr data\n");
@@ -328,7 +325,7 @@ int del_qdisc(int fd, uint32_t ifindex) {
 
 // set tbf shaping to interface, speed in bytes/sec
 int set_tc(int fd, uint32_t ifindex, uint32_t speed) {
-    char buf[1 << 12]; 
+    char buf[1 << 12] = {0}; 
     if (do_delqdisc(fd, ifindex, buf, sizeof(buf)) < 0) {
         return -1;
     }
@@ -412,7 +409,6 @@ int set_tc(int fd, uint32_t ifindex, uint32_t speed) {
         return -1;
     }
 
-    memset(buf, 0, sizeof(buf));
     int l = recv(fd, buf, sizeof(buf), 0);
     if (l < 0) {
         fprintf(stderr, "no data received\n");
