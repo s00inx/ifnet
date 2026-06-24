@@ -1,5 +1,4 @@
 #pragma once
-#define NL_H
 
 #include <stdint.h>
 
